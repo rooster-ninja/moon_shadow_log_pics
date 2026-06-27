@@ -80,15 +80,15 @@ fn main() -> anyhow::Result<()> {
     }
     log::info!("Time synced: {}", Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
 
-    // Camera
-    log::info!("Camera init…");
-    camera::init(cfg.framesize, cfg.jpeg_quality)?;
-
     log::info!("Boot complete — entering MQTT loop");
+
+    // Camera is initialised lazily on first MQTT connect so DMA activity
+    // doesn't interfere with the WiFi/TCP handshake during startup.
+    let mut cam_ready = false;
 
     // MQTT + session loop
     loop {
-        if let Err(e) = run_session(&cfg, &mut led) {
+        if let Err(e) = run_session(&cfg, &mut led, &mut cam_ready) {
             log::error!("Session error: {e}");
             flash_led(&mut led, 8, 80, 80);  // rapid burst = critical error
         }
@@ -108,6 +108,7 @@ fn flash_led(led: &mut PinDriver<'_, Output>, count: u8, on_ms: u64, gap_ms: u64
 fn run_session(
     cfg: &config::Config,
     led: &mut PinDriver<'_, Output>,
+    cam_ready: &mut bool,
 ) -> anyhow::Result<()> {
     let url = format!("mqtt://{}:{}", cfg.mqtt_host, cfg.mqtt_port);
     let mqtt_conf = MqttClientConfiguration {
@@ -171,7 +172,13 @@ fn run_session(
     loop {
         match rx.recv().map_err(|_| anyhow::anyhow!("MQTT event thread exited"))? {
             Ev::Connected => {
-                log::info!("MQTT connected — subscribing");
+                log::info!("MQTT connected");
+                if !*cam_ready {
+                    log::info!("Camera init (first connect)…");
+                    camera::init(cfg.framesize, cfg.jpeg_quality)?;
+                    *cam_ready = true;
+                    log::info!("Camera ready");
+                }
                 client.subscribe(&senddata_topic, QoS::AtMostOnce)?;
                 client.subscribe(&cmd_topic,      QoS::AtMostOnce)?;
                 log::info!("Subscribed OK");
