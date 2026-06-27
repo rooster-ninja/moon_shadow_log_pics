@@ -345,6 +345,16 @@ The host logger (`moon_temp_pic_logger`) runs on debserver (10.0.0.50):
 - Detects truncated JPEGs (missing `FF D9` EOI marker) and logs a warning
 - **ratatui terminal TUI** for live adjustment
 
+### TUI Screenshots
+
+**Schedule tab** — controls the capture window and interval. The header shows device name, current time, timezone, and MQTT connection state (green = connected). `Window start` and `Window stop` are local-time boundaries; captures are skipped outside the window. `Status` reads `outside window` during the day; switches to `ACTIVE — next capture in Ns` when inside the window.
+
+![Schedule tab](Assets/logger_tui_schedule.png)
+
+**Camera tab** — adjusts per-capture sensor settings sent in the `senddata` payload and persistent device config sent via `cmd` MQTT. The hint column shows the range, effect, and which MQTT command each field generates. Selected field is highlighted in yellow (label) and cyan (value). The Flash row shown here reflects an earlier version; flash has since been removed (see Flash LED section above).
+
+![Camera tab](Assets/logger_tui_camera.png)
+
 ### Running the Logger
 
 ```bash
