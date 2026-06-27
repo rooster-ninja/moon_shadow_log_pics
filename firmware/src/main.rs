@@ -69,7 +69,10 @@ fn main() -> anyhow::Result<()> {
         }
     }
     wifi.wait_netif_up()?;
-    log::info!("WiFi up");
+    // Disable modem sleep — beacon timeouts disconnect the session when the radio
+    // sleeps through AP keepalives on a battery-less always-on device.
+    unsafe { esp_idf_sys::esp_wifi_set_ps(esp_idf_sys::wifi_ps_type_t_WIFI_PS_NONE); }
+    log::info!("WiFi up (power save disabled)");
     flash_led(&mut led, 2, 200, 200);
 
     // SNTP time sync (needed for timestamps in filenames)
