@@ -1,0 +1,34 @@
+broker      = "10.0.0.50"
+port        = 1883
+mqtt_user   = ""
+mqtt_pass   = ""
+client_id   = "moon-shadow-logger"
+sensor_id   = "moon-shadow-001"
+
+interval    = 60      # seconds between captures
+start_time  = "20:00" # local time (see utc_offset_hours)
+stop_time   = "06:00" # local time
+
+# Camera settings sent with each capture command (-1 = auto)
+exposure    = -1
+gain        = -1
+
+# Camera settings sent via MQTT cmd to ESP32
+quality      = 10    # 1-63, lower = better quality
+gain_ceiling = 0     # 0=2x 1=4x 2=8x 3=16x 4=32x 5=64x 6=128x
+flash        = true  # fire flash LED during capture
+
+# Frame stacking: 0 = single frame, 1-10 = stack for N seconds (firmware measures fps)
+# Must be less than interval (stack_secs is the effective exposure time)
+stack_secs = 0
+
+# Camera resolution: 5=QVGA 8=VGA 9=SVGA 10=XGA 12=SXGA 13=UXGA(1600×1200 max)
+# UXGA + stacking needs 7.7 MB PSRAM accumulator — avoid with stack_secs > 0
+framesize = 9
+
+# UTC offset for local time display and window times above
+# e.g. -7 = UTC-7 (Mountain Daylight Time)
+utc_offset_hours = -7
+
+log_dir     = "/home/rooster/pic_logs/logs_photo"
+http_port   = 8765

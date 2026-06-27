@@ -1,0 +1,8 @@
+firmware/target/
+logger/target/
+firmware/.embuild/
+firmware/managed_components/
+firmware/dependencies.lock
+tools/config.bin
+*.bin
+.DS_Store
