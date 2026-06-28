@@ -72,12 +72,13 @@ type Shared = Arc<Mutex<AppState>>;
 // ── TUI app ──────────────────────────────────────────────────────────────────
 
 struct TuiApp {
-    tab:      usize,
-    selected: [usize; 2],  // per tab (schedule, camera)
+    tab:          usize,
+    selected:     [usize; 2],  // per tab (schedule, camera)
+    camera_dirty: bool,        // camera cmd fields changed but not yet sent
 }
 
 impl TuiApp {
-    fn new() -> Self { Self { tab: 0, selected: [0, 0] } }
+    fn new() -> Self { Self { tab: 0, selected: [0, 0], camera_dirty: false } }
 
     fn tab_field_count(&self) -> usize {
         match self.tab { 0 => 4, 1 => 6, _ => 0 }
@@ -290,16 +291,42 @@ async fn run_tui(state: Shared, client: AsyncClient, sensor_id: String) -> anyho
                         KeyCode::Up        => app.move_up(),
                         KeyCode::Down      => app.move_down(),
                         KeyCode::Left | KeyCode::Char('-') => {
-                            if let Some(cmd) = adjust(&mut state.lock().unwrap(), &app, -1) {
+                            let cmd = adjust(&mut state.lock().unwrap(), &app, -1);
+                            if app.tab == 1 {
+                                if cmd.is_some() { app.camera_dirty = true; }
+                            } else if let Some(cmd) = cmd {
                                 let c = client.clone(); let t = cmd_topic.clone();
                                 tokio::spawn(async move { let _ = c.publish(t, QoS::AtMostOnce, false, cmd).await; });
                             }
                         }
                         KeyCode::Right | KeyCode::Char('+') => {
-                            if let Some(cmd) = adjust(&mut state.lock().unwrap(), &app, 1) {
+                            let cmd = adjust(&mut state.lock().unwrap(), &app, 1);
+                            if app.tab == 1 {
+                                if cmd.is_some() { app.camera_dirty = true; }
+                            } else if let Some(cmd) = cmd {
                                 let c = client.clone(); let t = cmd_topic.clone();
                                 tokio::spawn(async move { let _ = c.publish(t, QoS::AtMostOnce, false, cmd).await; });
                             }
+                        }
+                        KeyCode::Char('s') | KeyCode::Char('S') if app.tab == 1 => {
+                            let (q, gc, fs) = {
+                                let s = state.lock().unwrap();
+                                (s.quality, s.gain_ceiling, s.framesize)
+                            };
+                            let c = client.clone(); let t = cmd_topic.clone();
+                            let state2 = Arc::clone(&state);
+                            tokio::spawn(async move {
+                                let _ = c.publish(&t, QoS::AtMostOnce, false,
+                                    json!({"cmd":"SetQuality","value":q}).to_string()).await;
+                                let _ = c.publish(&t, QoS::AtMostOnce, false,
+                                    json!({"cmd":"SetGainCeiling","value":gc}).to_string()).await;
+                                let _ = c.publish(&t, QoS::AtMostOnce, false,
+                                    json!({"cmd":"SetFramesize","value":fs}).to_string()).await;
+                                let ts = chrono::Utc::now().format("%H:%M:%S UTC").to_string();
+                                state2.lock().unwrap().push_log(
+                                    format!("{} → camera cmd sent: Q={} GC={} FS={}", ts, q, gc, fs));
+                            });
+                            app.camera_dirty = false;
                         }
                         KeyCode::Char('c') | KeyCode::Char('C') => {
                             let (exposure, gain, stack_secs) = {
@@ -439,9 +466,12 @@ fn draw(f: &mut Frame, app: &TuiApp, s: &AppState) {
     }
 
     // Footer
-    let footer = Paragraph::new(
+    let footer_text = if app.tab == 1 {
+        "  ↑↓ nav  ←→ adjust  s send to device  c capture now  Tab next  q quit"
+    } else {
         "  ↑↓ nav  ←→ adjust  c capture now  Tab next  q quit"
-    ).style(Style::default().fg(Color::DarkGray));
+    };
+    let footer = Paragraph::new(footer_text).style(Style::default().fg(Color::DarkGray));
     f.render_widget(footer, outer[3]);
 }
 
@@ -545,12 +575,12 @@ fn draw_camera(f: &mut Frame, area: ratatui::layout::Rect, app: &TuiApp, s: &App
         Row::new(vec![
             Cell::from("  Quality").style(hl(app.sel() == 2 && app.tab == 1)),
             Cell::from(format!("{:>5}", s.quality)).style(val_style(app.sel() == 2 && app.tab == 1)),
-            Cell::from("1-63, lower = better  → sends SetQuality"),
+            Cell::from("1-63, lower = better"),
         ]),
         Row::new(vec![
             Cell::from("  Gain ceiling").style(hl(app.sel() == 3 && app.tab == 1)),
             Cell::from(format!("{:>5}", s.gain_ceiling)).style(val_style(app.sel() == 3 && app.tab == 1)),
-            Cell::from(format!("{}  (0-6)  → sends SetGainCeiling", gc_label)),
+            Cell::from(format!("{}  (0-6)", gc_label)),
         ]),
         {
             let stack_warn = s.stack_secs > 0 && s.interval_secs <= s.stack_secs as u64;
@@ -590,7 +620,7 @@ fn draw_camera(f: &mut Frame, area: ratatui::layout::Rect, app: &TuiApp, s: &App
             let hint = if psram_warn {
                 format!("{}  ⚠ UXGA+stack may exhaust PSRAM", fs_label)
             } else {
-                format!("{}  (0-13)  → sends SetFramesize", fs_label)
+                format!("{}  (0-13)", fs_label)
             };
             Row::new(vec![
                 Cell::from("  Framesize").style(hl(app.sel() == 5 && app.tab == 1)),
@@ -600,8 +630,9 @@ fn draw_camera(f: &mut Frame, area: ratatui::layout::Rect, app: &TuiApp, s: &App
         },
     ];
 
+    let cam_title = if app.camera_dirty { " Camera  ● unsaved " } else { " Camera " };
     let table = Table::new(fields, [Constraint::Length(18), Constraint::Length(12), Constraint::Min(0)])
-        .block(Block::default().borders(Borders::ALL).title(" Camera "));
+        .block(Block::default().borders(Borders::ALL).title(cam_title));
     f.render_widget(table, area);
 }
 

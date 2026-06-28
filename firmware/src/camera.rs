@@ -430,3 +430,12 @@ pub fn set_gain_ceiling(ceiling: u8) {
         if let Some(f) = (*sensor).set_gainceiling { f(sensor, ceiling as u32); }
     }
 }
+
+/// Set JPEG quality via sensor API (no reinit needed). 0-63; lower = better.
+pub fn set_quality(quality: u8) {
+    let sensor = unsafe { esp_camera_sensor_get() };
+    if sensor.is_null() { return; }
+    unsafe {
+        if let Some(f) = (*sensor).set_quality { f(sensor, quality as i32); }
+    }
+}

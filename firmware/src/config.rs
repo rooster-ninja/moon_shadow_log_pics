@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 const MAGIC: [u8; 4] = [0xFA, 0x12, 0xC3, 0x7A];
 const HEADER_SIZE: usize = 8;
 const MAX_JSON: usize = 512;
-const SECTOR_SIZE: usize = 4096;
 const PARTITION_NAME: &[u8] = b"config\0";
 
 fn default_flash() -> bool { true }
@@ -100,33 +99,4 @@ pub fn load() -> Option<Config> {
             None
         }
     }
-}
-
-pub fn save(cfg: &Config) -> anyhow::Result<()> {
-    let json = serde_json::to_string(cfg)?;
-    let json_bytes = json.as_bytes();
-    anyhow::ensure!(json_bytes.len() <= MAX_JSON, "config JSON too large");
-
-    let partition = find_partition();
-    anyhow::ensure!(!partition.is_null(), "config partition not found");
-
-    // Stack-allocated write buffer — esp_partition_write requires the source to be
-    // in internal DRAM (not PSRAM); heap allocation may land in PSRAM when DRAM is
-    // tight, causing the write to fail silently after erasing the sector.
-    // The main-task stack is always in DRAM on ESP32.
-    let mut buf = [0xFFu8; HEADER_SIZE + MAX_JSON + 4];
-    buf[..4].copy_from_slice(&MAGIC);
-    buf[4..8].copy_from_slice(&(json_bytes.len() as u32).to_le_bytes());
-    buf[HEADER_SIZE..HEADER_SIZE + json_bytes.len()].copy_from_slice(json_bytes);
-    let aligned = (HEADER_SIZE + json_bytes.len() + 3) & !3;
-
-    let err = unsafe { esp_idf_sys::esp_partition_erase_range(partition, 0, SECTOR_SIZE) };
-    anyhow::ensure!(err == 0, "partition erase failed: 0x{:X}", err);
-
-    let err = unsafe {
-        esp_idf_sys::esp_partition_write(partition, 0, buf.as_ptr() as *const _, aligned)
-    };
-    anyhow::ensure!(err == 0, "partition write failed: 0x{:X}", err);
-
-    Ok(())
 }

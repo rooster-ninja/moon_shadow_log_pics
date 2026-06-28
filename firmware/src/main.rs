@@ -89,9 +89,18 @@ fn main() -> anyhow::Result<()> {
     // doesn't interfere with the WiFi/TCP handshake during startup.
     let mut cam_ready = false;
 
+    // Runtime-mutable camera settings; cmd messages update these in-memory
+    // without touching flash.  Persists across MQTT reconnects.
+    let mut rt_framesize    = cfg.framesize;
+    let mut rt_quality      = cfg.jpeg_quality;
+    let mut rt_gain_ceiling = cfg.gain_ceiling;
+
     // MQTT + session loop
     loop {
-        if let Err(e) = run_session(&cfg, &mut led, &mut cam_ready) {
+        if let Err(e) = run_session(
+            &cfg, &mut led, &mut cam_ready,
+            &mut rt_framesize, &mut rt_quality, &mut rt_gain_ceiling,
+        ) {
             log::error!("Session error: {e}");
             flash_led(&mut led, 8, 80, 80);  // rapid burst = critical error
         }
@@ -112,6 +121,9 @@ fn run_session(
     cfg: &config::Config,
     led: &mut PinDriver<'_, Output>,
     cam_ready: &mut bool,
+    rt_framesize:    &mut u8,
+    rt_quality:      &mut u8,
+    rt_gain_ceiling: &mut u8,
 ) -> anyhow::Result<()> {
     let url = format!("mqtt://{}:{}", cfg.mqtt_host, cfg.mqtt_port);
     let mqtt_conf = MqttClientConfiguration {
@@ -178,7 +190,7 @@ fn run_session(
                 log::info!("MQTT connected");
                 if !*cam_ready {
                     log::info!("Camera init (first connect)…");
-                    camera::init(cfg.framesize, cfg.jpeg_quality)?;
+                    camera::init(*rt_framesize, *rt_quality)?;
                     *cam_ready = true;
                     log::info!("Camera ready");
                 }
@@ -189,13 +201,14 @@ fn run_session(
                 let hello = serde_json::json!({
                     "device_id": cfg.device_id,
                     "msg": "booted",
-                    "framesize": cfg.framesize,
-                    "quality": cfg.jpeg_quality,
+                    "framesize": *rt_framesize,
+                    "quality":   *rt_quality,
                 });
                 client.publish(&hello_topic, QoS::AtMostOnce, true,
                     hello.to_string().as_bytes())?;
                 log::info!("Published hello");
-                publish_status(&mut client, &status_topic, "online", cfg)?;
+                publish_status(&mut client, &status_topic, "online",
+                    cfg, *rt_framesize, *rt_quality, *rt_gain_ceiling)?;
                 flash_led(led, 3, 200, 200);
             }
             Ev::Received { topic, data } => {
@@ -214,7 +227,7 @@ fn run_session(
                                 log::info!("Stacking {} frames at {:.2} fps ≈ {:.1}s",
                                            n_frames, fps, n_frames as f32 / fps);
                                 camera::capture_stacked_jpeg(
-                                    n_frames, cfg.framesize, cfg.jpeg_quality,
+                                    n_frames, *rt_framesize, *rt_quality,
                                     cmd.exposure, cmd.gain,
                                 )
                             } else {
@@ -235,7 +248,7 @@ fn run_session(
                                 }
                                 Err(e) => {
                                     log::error!("Capture failed: {e}");
-                                    camera::recover(cfg.framesize, cfg.jpeg_quality);
+                                    camera::recover(*rt_framesize, *rt_quality);
                                 }
                             }
                         }
@@ -243,7 +256,7 @@ fn run_session(
                     }
                 } else if topic == cmd_topic {
                     if let Ok(cmd) = serde_json::from_slice::<ConfigCmd>(&data) {
-                        handle_config_cmd(cmd);
+                        handle_config_cmd(cmd, rt_framesize, rt_quality, rt_gain_ceiling);
                     }
                 }
             }
@@ -252,7 +265,8 @@ fn run_session(
         }
 
         if last_status.elapsed() >= Duration::from_secs(60) {
-            publish_status(&mut client, &status_topic, "alive", cfg)?;
+            publish_status(&mut client, &status_topic, "alive",
+                cfg, *rt_framesize, *rt_quality, *rt_gain_ceiling)?;
             last_status = Instant::now();
         }
     }
@@ -263,39 +277,55 @@ fn publish_status(
     topic: &str,
     status: &str,
     cfg: &config::Config,
+    framesize:    u8,
+    quality:      u8,
+    gain_ceiling: u8,
 ) -> anyhow::Result<()> {
     let msg = StatusMessage {
         status,
-        framesize:    cfg.framesize,
-        quality:      cfg.jpeg_quality,
-        gain_ceiling: cfg.gain_ceiling,
-        upload_host:  &cfg.upload_host,
+        framesize,
+        quality,
+        gain_ceiling,
+        upload_host: &cfg.upload_host,
     };
     let payload = serde_json::to_vec(&msg)?;
     client.publish(topic, QoS::AtMostOnce, false, &payload)?;
     Ok(())
 }
 
-fn handle_config_cmd(cmd: ConfigCmd) {
+fn handle_config_cmd(
+    cmd: ConfigCmd,
+    rt_framesize:    &mut u8,
+    rt_quality:      &mut u8,
+    rt_gain_ceiling: &mut u8,
+) {
     // Runtime cmd messages update in-memory camera state only — no flash write.
     // Config partition is write-once (provisioned via provision.py).
-    // Writing flash at runtime risks leaving the partition blank if a reset
-    // occurs between the erase and write, causing a boot-loop on next power-on.
     match cmd.cmd.as_str() {
         "SetFramesize" => {
             if let Some(v) = cmd.value.and_then(|v| v.as_u64()) {
-                log::info!("SetFramesize → {} (takes effect on next capture reinit)", v);
+                let fs = v as u8;
+                log::info!("SetFramesize → {} (reiniting camera…)", fs);
+                // Framesize change requires full DMA reinit since buffer size changes.
+                camera::recover(fs, *rt_quality);
+                *rt_framesize = fs;
+                log::info!("SetFramesize done");
             }
         }
         "SetQuality" => {
             if let Some(v) = cmd.value.and_then(|v| v.as_u64()) {
-                log::info!("SetQuality → {} (takes effect on next capture reinit)", v);
+                let q = v as u8;
+                camera::set_quality(q);
+                *rt_quality = q;
+                log::info!("SetQuality → {}", q);
             }
         }
         "SetGainCeiling" => {
             if let Some(v) = cmd.value.and_then(|v| v.as_u64()) {
-                camera::set_gain_ceiling(v as u8);
-                log::info!("SetGainCeiling → {}", v);
+                let gc = v as u8;
+                camera::set_gain_ceiling(gc);
+                *rt_gain_ceiling = gc;
+                log::info!("SetGainCeiling → {}", gc);
             }
         }
         _ => log::warn!("Unknown cmd: {}", cmd.cmd),
