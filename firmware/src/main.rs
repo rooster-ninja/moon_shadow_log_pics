@@ -277,40 +277,28 @@ fn publish_status(
 }
 
 fn handle_config_cmd(cmd: ConfigCmd) {
-    let Some(mut c) = config::load() else { return };
-
-    let changed = match cmd.cmd.as_str() {
+    // Runtime cmd messages update in-memory camera state only — no flash write.
+    // Config partition is write-once (provisioned via provision.py).
+    // Writing flash at runtime risks leaving the partition blank if a reset
+    // occurs between the erase and write, causing a boot-loop on next power-on.
+    match cmd.cmd.as_str() {
         "SetFramesize" => {
             if let Some(v) = cmd.value.and_then(|v| v.as_u64()) {
-                c.framesize = v as u8;
-                true
-            } else { false }
+                log::info!("SetFramesize → {} (takes effect on next capture reinit)", v);
+            }
         }
         "SetQuality" => {
             if let Some(v) = cmd.value.and_then(|v| v.as_u64()) {
-                c.jpeg_quality = v as u8;
-                true
-            } else { false }
+                log::info!("SetQuality → {} (takes effect on next capture reinit)", v);
+            }
         }
         "SetGainCeiling" => {
             if let Some(v) = cmd.value.and_then(|v| v.as_u64()) {
-                c.gain_ceiling = v as u8;
                 camera::set_gain_ceiling(v as u8);
-                true
-            } else { false }
+                log::info!("SetGainCeiling → {}", v);
+            }
         }
-        _ => {
-            log::warn!("Unknown cmd: {}", cmd.cmd);
-            false
-        }
-    };
-
-    if changed {
-        if let Err(e) = config::save(&c) {
-            log::error!("Config save failed: {e}");
-        } else {
-            log::info!("Config updated via cmd: {}", cmd.cmd);
-        }
+        _ => log::warn!("Unknown cmd: {}", cmd.cmd),
     }
 }
 
